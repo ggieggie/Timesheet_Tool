@@ -57,7 +57,6 @@ python Timesheet_Tool.py
 
 例:
 📆 hoge会社 : 358 events / 2 request(s) 
-📆 huga会社 : 402 events / 3 request(s)
 
 ---
 
