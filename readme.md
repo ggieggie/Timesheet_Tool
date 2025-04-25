@@ -13,11 +13,11 @@ Google カレンダーから指定月の予定を抽出し、勤務表フォー�
 
 ## 1. インストール
 
-<pre><code>```
+<pre><code>
 pip install
 pandas pytz gspread gspread_dataframe gspread-formatting
 google-api-python-client google-auth google-auth-oauthlib
-```</code></pre>
+</code></pre>
 
 ---
 
