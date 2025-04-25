@@ -7,7 +7,7 @@ Google カレンダーから指定月の予定を抽出し、勤務表フォー�
 - **ページネーション** 完全対応（`nextPageToken`）  
 - Sheets API 60 req/min 制限を **65 秒待機**で回避  
 - 実働時間は跨日対応式 `IF(C<B,(C+1)-B,C-B)*24-D`  
-- 取得件数 / API 呼び出し回数をデバッグ出力（例 : `📆 西武 : 358 events / 2 request(s)`）
+- 取得件数 / API 呼び出し回数をデバッグ出力
 
 ---
 
@@ -33,9 +33,10 @@ google-api-python-client google-auth google-auth-oauthlib
 
 ## 3. config.csv の書式
 
-<pre><code>```
+<pre><code>
 キーワード1,キーワード2,...,スプレッドシートID 
-```</code></pre>
+例）Hoge,ホゲ,12w3e4r5t6y7u8i9o0drftgyhuji
+</code></pre>
 
 - 行末がスプレッドシート ID（URL の `/d/` と `/edit` の間）  
 - それ以前はイベントタイトルに含めるキーワード（大文字小文字無視・複数可）
@@ -44,10 +45,10 @@ google-api-python-client google-auth google-auth-oauthlib
 
 ## 4. 使い方
 
-<pre><code>```
+<pre><code>
 python Timesheet_Tool.py
 対象年月 (YYYYMM): 202504
-```</code></pre>
+</code></pre>
 
 - 月初 0 時 UTC 〜 翌月 1 日 0 時 UTC の予定を全件取得  
 - キーワードごとにシートへ出力  
