@@ -55,7 +55,8 @@ python Timesheet_Tool.py
 - 取得件数 / API コール回数を集計表示  
 
 例:
-📆 西武 : 358 events / 2 request(s) 📆 Plan-B : 402 events / 3 request(s)
+📆 hoge会社 : 358 events / 2 request(s) 
+📆 huga会社 : 402 events / 3 request(s)
 
 ---
 
