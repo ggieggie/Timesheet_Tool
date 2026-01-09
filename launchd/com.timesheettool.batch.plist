@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.timesheettool.batch</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/veggie/Desktop/batch_system/TimesheetTool/venv/bin/python3</string>
+        <string>/Users/veggie/Desktop/batch_system/TimesheetTool/Timesheet_Tool.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/veggie/Desktop/batch_system/TimesheetTool</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/veggie/Desktop/batch_system/TimesheetTool/venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>DEBUG_EVENTS</key>
+        <string>0</string>
+        <key>DRY_RUN</key>
+        <string>0</string>
+    </dict>
+
+    <!-- 毎日 8:00 に当月分を自動処理 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/veggie/Desktop/batch_system/TimesheetTool/logs/timesheet.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/veggie/Desktop/batch_system/TimesheetTool/logs/timesheet.error.log</string>
+</dict>
+</plist>

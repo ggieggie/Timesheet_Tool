@@ -1,18 +1,25 @@
 """
 Timesheet_Tool.py   •   2025-04-24
 ────────────────────────────────────────────────────────
-  ● 対象年月を YYYYMM で入力（例 202504）
+  ● 対象年月を YYYYMM で入力（例 202504）または自動で当月を処理
   ● config.csv の各行「キーワード…,スプレッドシートID」を順に処理
   ● 終日(date) / 通常(dateTime) イベント両対応
   ● ページネーション対応（nextPageToken）
   ● 取得件数・API 呼び出し回数を集計表示
   ● E列実働 = IF(C<B,(C+1)-B,C-B)*24-D   ← 跨日対応
   ● シートごとに 65 秒待機で Sheets 60 req/min 制限を回避
+
+  バッチ実行:
+    python Timesheet_Tool.py               # 当月を自動処理
+    python Timesheet_Tool.py 202504        # 指定月を処理
+    python Timesheet_Tool.py --interactive # 対話モード
+    DRY_RUN=1 python Timesheet_Tool.py     # ドライラン（書き込みなし）
 """
 
-import csv, os, sys, re, logging, time
+import csv, os, sys, re, logging, time, argparse
 from datetime import datetime, timedelta
 from collections import defaultdict
+from pathlib import Path
 import pandas as pd
 import pytz
 
@@ -27,13 +34,31 @@ from gspread_formatting import (
 )
 
 # ───────── Config ─────────
-DEBUG_EVENTS = True                 # True で各予定を逐次表示
-SCOPES      = ['https://www.googleapis.com/auth/calendar.readonly',
-               'https://www.googleapis.com/auth/spreadsheets']
-TOKEN_FILE  = 'token.json'
-JST         = pytz.timezone('Asia/Tokyo')
-WAIT_SEC    = 65
-DATE_FMT    = '%Y/%m/%d'
+DEBUG_EVENTS = os.environ.get('DEBUG_EVENTS', '1') == '1'
+DRY_RUN      = os.environ.get('DRY_RUN', '0') == '1'
+SCOPES       = ['https://www.googleapis.com/auth/calendar.readonly',
+                'https://www.googleapis.com/auth/spreadsheets']
+SCRIPT_DIR   = Path(__file__).resolve().parent
+TOKEN_FILE   = str(SCRIPT_DIR / 'token.json')
+CONFIG_FILE  = str(SCRIPT_DIR / 'config.csv')
+CREDS_FILE   = str(SCRIPT_DIR / 'credentials.json')
+LOG_DIR      = SCRIPT_DIR / 'logs'
+JST          = pytz.timezone('Asia/Tokyo')
+WAIT_SEC     = 65
+DATE_FMT     = '%Y/%m/%d'
+
+# ───────── Logging Setup ─────────
+LOG_DIR.mkdir(exist_ok=True)
+log_file = LOG_DIR / 'timesheet.log'
+file_handler = logging.FileHandler(log_file, encoding='utf-8')
+file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter('%(message)s'))
+
+logger = logging.getLogger('timesheet')
+logger.setLevel(logging.INFO)
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 SAT_FONT = CellFormat(textFormat=TextFormat(foregroundColor=Color(0.18,0.50,1.0)))
 SUN_FONT = CellFormat(textFormat=TextFormat(foregroundColor=Color(1.00,0.25,0.25)))
@@ -43,20 +68,48 @@ HEAD_FMT = CellFormat(backgroundColor=Color(0.86,0.90,0.96),
 NUM_FMT  = CellFormat(numberFormat={'type':'NUMBER','pattern':'0.00'})
 TAG_RE   = re.compile(r'\[[^\]]+\]\s*')
 
-logging.basicConfig(level=logging.INFO)
-googleapiclient.discovery.logger.setLevel(logging.DEBUG)
+googleapiclient.discovery.logger.setLevel(logging.WARNING)
 
 # ───────── Utils ─────────
 def to_rfc3339_z(dt): return dt.astimezone(pytz.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 def authenticate():
+    """OAuth認証（トークン自動リフレッシュ対応）"""
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+
+    creds = None
     if os.path.exists(TOKEN_FILE):
-        from google.oauth2.credentials import Credentials
-        return Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    flow=InstalledAppFlow.from_client_secrets_file('credentials.json',SCOPES)
-    creds=flow.run_local_server(port=0)
-    with open(TOKEN_FILE,'w') as f: f.write(creds.to_json())
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+
+    # トークンが無効または期限切れの場合、リフレッシュを試みる
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            logger.info('🔄 トークンをリフレッシュ中...')
+            creds.refresh(Request())
+            with open(TOKEN_FILE, 'w') as f:
+                f.write(creds.to_json())
+            logger.info('✅ トークンをリフレッシュしました')
+        except Exception as e:
+            logger.error('❌ トークンのリフレッシュに失敗: %s', e)
+            creds = None
+
+    # トークンがない場合は新規認証（対話が必要）
+    if not creds or not creds.valid:
+        if not sys.stdin.isatty():
+            logger.error('❌ トークンが無効です。対話モードで再認証してください: python Timesheet_Tool.py --interactive')
+            sys.exit(1)
+        flow = InstalledAppFlow.from_client_secrets_file(CREDS_FILE, SCOPES)
+        creds = flow.run_local_server(port=0)
+        with open(TOKEN_FILE, 'w') as f:
+            f.write(creds.to_json())
+
     return creds
+
+def get_current_month():
+    """当月のYYYYMMを返す"""
+    today = datetime.now(JST)
+    return today.strftime('%Y%m')
 
 # ───────── Calendar fetch ─────────
 def get_events(svc, start, end, keywords):
@@ -90,7 +143,7 @@ def get_events(svc, start, end, keywords):
                 e = datetime.fromisoformat(ev['end'  ]['date'] + 'T00:00:00+00:00')
 
             if DEBUG_EVENTS:
-                print(s.astimezone(JST).strftime('%Y-%m-%dT%H:%M'), title)
+                logger.debug('%s %s', s.astimezone(JST).strftime('%Y-%m-%dT%H:%M'), title)
 
             rec[s.astimezone(JST).strftime(DATE_FMT)].append(
                 {'start': s, 'end': e, 'title': title}
@@ -101,7 +154,7 @@ def get_events(svc, start, end, keywords):
         if not page_token:
             break
 
-    print(f'📆 {keywords[0]} : {total_cnt} events / {req_cnt} request(s)')
+    logger.info('📆 %s : %d events / %d request(s)', keywords[0], total_cnt, req_cnt)
     return rec
 
 # ───────── Summarize ─────────
@@ -152,37 +205,72 @@ def write_sheet(creds, df, sid, name):
         if fmt: format_cell_range(ws,f'A{r}',fmt)
 
     set_column_width(ws,'A',105); set_column_width(ws,'F',320)
-    print(f'✅ {name} → {sid}')
+    logger.info('✅ %s → %s', name, sid)
 
 # ───────── Countdown ─────────
-def countdown(sec):
-    for s in range(sec,0,-1):
-        print(f'\r⏳ 次のシートまで {s:02d} 秒待機…', end='', flush=True)
-        time.sleep(1)
-    print('\r⏳ 待機終了。次を処理します！   ')
+def countdown(sec, interactive=False):
+    if interactive:
+        for s in range(sec,0,-1):
+            print(f'\r⏳ 次のシートまで {s:02d} 秒待機…', end='', flush=True)
+            time.sleep(1)
+        print('\r⏳ 待機終了。次を処理します！   ')
+    else:
+        logger.info('⏳ 次のシートまで %d 秒待機…', sec)
+        time.sleep(sec)
 
 # ───────── main ─────────
 def main():
-    ym=input('対象年月 (YYYYMM): ').strip()
-    if len(ym)!=6 or not ym.isdigit():
-        print('YYYYMM 6桁で入力してください'); sys.exit(1)
-    y,m=int(ym[:4]),int(ym[4:])
-    start=datetime(y,m,1,tzinfo=pytz.UTC)
-    end=(start.replace(day=28)+timedelta(days=4)).replace(day=1,tzinfo=pytz.UTC)
+    parser = argparse.ArgumentParser(description='Google Calendar → タイムシート自動生成')
+    parser.add_argument('month', nargs='?', help='対象年月 YYYYMM（省略時は当月）')
+    parser.add_argument('--interactive', '-i', action='store_true', help='対話モード')
+    args = parser.parse_args()
 
-    creds=authenticate()
-    cal_svc=build('calendar','v3',credentials=creds)
+    # 対象年月の決定
+    if args.interactive:
+        ym = input('対象年月 (YYYYMM): ').strip()
+    elif args.month:
+        ym = args.month
+    else:
+        ym = get_current_month()
+        logger.info('📅 対象年月（自動）: %s', ym)
 
-    rows=[r for r in csv.reader(open('config.csv',encoding='utf-8')) if r]
-    total=len(rows)
-    for i,( *kw,sid) in enumerate(rows,1):
-        kw=[k.strip() for k in kw if k.strip()]
+    if len(ym) != 6 or not ym.isdigit():
+        logger.error('YYYYMM 6桁で入力してください: %s', ym)
+        sys.exit(1)
+
+    y, m = int(ym[:4]), int(ym[4:])
+    start = datetime(y, m, 1, tzinfo=pytz.UTC)
+    end = (start.replace(day=28) + timedelta(days=4)).replace(day=1, tzinfo=pytz.UTC)
+
+    logger.info('🚀 タイムシート処理開始: %s', ym)
+    if DRY_RUN:
+        logger.info('⚠️  DRY_RUN モード: スプレッドシートへの書き込みはスキップ')
+
+    creds = authenticate()
+    cal_svc = build('calendar', 'v3', credentials=creds)
+
+    rows = [r for r in csv.reader(open(CONFIG_FILE, encoding='utf-8')) if r]
+    total = len(rows)
+    success_count = 0
+    error_count = 0
+
+    for i, (*kw, sid) in enumerate(rows, 1):
+        kw = [k.strip() for k in kw if k.strip()]
         try:
-            df=summarize(get_events(cal_svc,start,end,kw),y,m)
-            write_sheet(creds,df,sid,ym)
-            if i<total: countdown(WAIT_SEC)
+            df = summarize(get_events(cal_svc, start, end, kw), y, m)
+            if DRY_RUN:
+                logger.info('🔍 [DRY_RUN] %s: %d 日分のデータ', kw[0], len(df) - 1)
+            else:
+                write_sheet(creds, df, sid, ym)
+            success_count += 1
+            if i < total:
+                countdown(WAIT_SEC, interactive=args.interactive)
         except Exception as e:
-            print(f'❌ 行{i} でエラー: {kw+[sid]}\n   ↳ {e}')
+            logger.error('❌ 行%d でエラー: %s\n   ↳ %s', i, kw + [sid], e)
+            error_count += 1
 
-if __name__=='__main__':
+    logger.info('🏁 処理完了: 成功 %d / 失敗 %d', success_count, error_count)
+    sys.exit(0 if error_count == 0 else 1)
+
+if __name__ == '__main__':
     main()
